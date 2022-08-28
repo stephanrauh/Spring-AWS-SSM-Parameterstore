@@ -1,0 +1,60 @@
+version: "3.8"
+
+services:
+  localstack:
+    container_name: "${LOCALSTACK_DOCKER_NAME-localstack_main}"
+    image: localstack/localstack:1.0.4
+    ports:
+      - "127.0.0.1:4566:4566"            # LocalStack Gateway
+      - "127.0.0.1:4510-4559:4510-4559"  # external services port range
+      - "127.0.0.1:53:53"                # DNS config (only required for Pro)
+      - "127.0.0.1:53:53/udp"            # DNS config (only required for Pro)
+      - "127.0.0.1:443:443"              # LocalStack HTTPS Gateway (only required for Pro)
+    environment:
+      - DEBUG=${DEBUG-}
+      - PERSISTENCE=${PERSISTENCE-}
+      - LAMBDA_EXECUTOR=${LAMBDA_EXECUTOR-}
+      - LOCALSTACK_API_KEY=${LOCALSTACK_API_KEY-}  # only required for Pro
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+  aws_cli:
+    image: amazon/aws-cli
+    depends_on:
+      - localstack
+    entrypoint: /bin/sh -c
+    command: >
+      '
+      COUNTER=15;
+      DESIRED_STATE="ssm available";
+      SERVICE_ACTUAL_STATE=0;
+      
+       while [ $$COUNTER -ne 0 ] && [ $$SERVICE_ACTUAL_STATE != 1 ]
+      
+       do 
+       RESPONSE=$$(curl -sb --connect-timeout 2 /dev/null "localstack:4566/health?redirect" | tr -cd [^[:alnum:][:space:]]+) 
+       echo " Response from Localstack $$RESPONSE";
+      
+       if [[ $$RESPONSE == *"$$DESIRED_STATE"* ]]; then SERVICE_ACTUAL_STATE=1; else SERVICE_ACTUAL_STATE=0; fi;
+      
+       COUNTER=$$((COUNTER-1)); 
+       echo "Service is not ready yet! $$COUNTER retries left."; 
+       sleep 3; 
+       done; 
+       echo backend is up;
+      
+       echo "########### Creating profile ###########"
+
+       aws --endpoint-url=https://localhost:4566 configure set aws_access_key_id default_access_key  --profile=localstack
+       aws --endpoint-url=https://localhost:4566 configure set aws_secret_access_key default_secret_key  --profile=localstack
+       aws --endpoint-url=https://localhost:4566 configure set region eu-central-1  --profile=localstack
+
+       # echo "########### Listing profile ###########"
+       aws configure list  --profile=localstack
+
+       echo "########### Populating local SSM Parameter Store ###########"
+       
+       aws --endpoint-url=https://localhost:4566  ssm put-parameter --region=eu-central-1 --name=/config/my-favorite-app/some.value --value="default profile from LocalStack" --type=String  --profile=localstack
+       aws --endpoint-url=https://localhost:4566  ssm put-parameter --region=eu-central-1 --name=/config/my-favorite-app/local/some.value --value="local profile from LocalStack" --type=String --profile=localstack
+       '
